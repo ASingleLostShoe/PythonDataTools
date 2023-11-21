@@ -2,7 +2,8 @@
 Code Written by Pat Hall
 Last updated: 11.21.23
 """
-
+import data_utils as du
+import pandas as pd
 import os
 import sqlite3 as sql
 import psycopg as pg
@@ -67,7 +68,7 @@ def create_table_columns_from_csv(csv_file_path,schema,new_table_name,delim=';')
     password = os.environ.get("PASSWORD")
 
     # Create a connection + cursor to the PostgreSQL database
-    cur,conn = db.initiate_pg_cursor(dbname,user,password) #connects to db and creates cursor object
+    cur,conn = initiate_pg_cursor(dbname,user,password) #connects to db and creates cursor object
 
     # Path to your large CSV file
     csv_file_path = '/Users/pathall/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/GEOG 5050 - Spatial Stats/Final_Project/Data/Staging/airbnb-listings.csv'
