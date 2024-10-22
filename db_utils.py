@@ -103,6 +103,119 @@ def create_table_columns_from_csv(csv_file_path,schema,new_table_name,delim=';')
 
     print(f'Table "{schema}.{new_table_name}" has been created in the database.')
 
+
+def create_table_columns_from_excel(xlsx_filepath,ws_name,schema,new_table_name):
+    """
+    Creates a new table in a postgreSQL database from an excel worksheet. uses pandas
+    to get datatype from excel, then converts to compatible PGSQL datatype with 
+    dtype_pd_to_pg().
+
+    Parameters:
+    xslx_filepath (str): filepath to excel workbook being imported
+    ws_name (str): name of work sheet in workbook to reference.
+    schema (str): name of schema in db to insert table into.
+    new_table_name (str): name of new table being createsd
+
+    Returns:
+    Self contained function, does not return any variables.
+    """
+
+    load_dotenv()
+    dbname = os.environ.get('DB_NAME')
+    user = os.environ.get("USER")
+    password = os.environ.get("PASSWORD")
+
+    cur,conn = initiate_pg_cursor(dbname,user,password)
+    
+    df = pd.read_excel(io=xlsx_filepath,sheet_name=ws_name)
+    column_names = df.columns.tolist()
+    column_dtypes = df.dtypes.tolist()
+
+    pg_dtypes = dtype_pd_to_pg(column_dtypes)
+    corrected_column_names = du.replace_spaces_in_list(column_names)
+
+    for colname, coldtype in zip(corrected_column_names,pg_dtypes):
+        print(colname,coldtype)
+
+    print()
+    print(f'{len(corrected_column_names)} columns identified and formatted.')
+    print()
+
+    create_table = f"CREATE TABLE {schema}.{new_table_name} ({','.join([f'{col} {dtype}' for col, dtype in zip(corrected_column_names, pg_dtypes)])})"
+
+    cur.execute(create_table)
+    conn.commit()
+    conn.close()
+
+    print(f'Table "{schema}.{new_table_name}" has been created in the database {dbname}.')
+
+
+def dtype_pd_to_pg(pd_dtypes):
+    """
+    Creates a list of postgresql data types equivalent to data types as they currently exist in 
+    pandas dataframe. conersions use dictionary, pandas_to_postgresql, in data_utils.py.
+
+    Parameters:
+    pd_dtypes (list): list of pandas datatypes to be converted to postgreSQL data types.
+
+    Returns:
+    pg_dtypes (list): list of postgreSQL datatypes equivalent to input pandas data types.
+    """
+    pg_dtypes = []
+    for dtype in pd_dtypes:
+        pg_dtypes.append(du.pandas_to_postgresql.get(str(dtype),'TEXT'))
+    return pg_dtypes
+
+def insert_rows_from_excel(xlsx_filepath,ws_name,schema,table_name):
+    """
+    inserts all rows from an excel woeksheet into a specified postgreSQL table.
+    The intention is that a user would run this after "create_table_columns_from_excel()".
+
+    Parameters:
+    xlsx_filepath (str): filepath to excel workbook being imported
+    ws_name (str): name of worksheet within excel workbook to import.
+    schema (str): name of schema in postgreSQL.
+    table_name (str): name of existing table in postgreSQL to import data to.
+
+    Returns:
+    Nothing. Self-contained function.
+    """
+
+    load_dotenv()
+    dbname = os.environ.get('DB_NAME')
+    user = os.environ.get("USER")
+    password = os.environ.get("PASSWORD")
+
+    #establish db connection
+    cur,conn = initiate_pg_cursor(dbname,user,password)
+
+    #prep data for insertion to db table
+    df = pd.read_excel(io=xlsx_filepath,sheet_name=ws_name)
+    column_names = df.columns.tolist()
+    corrected_column_names = du.replace_spaces_in_list(column_names)
+    df.columns = corrected_column_names
+    col = ', '.join(list(df.columns))
+    values = ', '.join(list('%s' for _ in df.columns))
+    insert_query = f"INSERT INTO {schema}.{table_name} ({col}) VALUES ({values})"
+
+    data_tuples = [tuple(x) for x in df.to_numpy()]
+
+  
+
+    print(f'inserting values across {len(corrected_column_names)} columns in {dbname}.{schema}.{table_name}')
+    print()
+    print('executing INSERT...')
+    cur.executemany(insert_query, data_tuples)
+    print('INSERT executed.')
+    conn.commit()
+    print('changes committed!')
+    conn.close()
+    print('connection closed.')
+    print()
+
+    print(f'{len(values)} values have been inserted into "{schema}.{table_name}" in the database {dbname}.')
+
+    
 #Initiates a connection and cursor for local postgreSQL session
 def initiate_pg_cursor(dbname,user,password):
 
@@ -119,7 +232,6 @@ def initiate_pg_cursor(dbname,user,password):
     Returns:
     cursor (pg cursor object): pass SQL queries to db and retrieve data from db.
     connection (pg connection object): establish and manage connection to db.
-
     """
    
     try:
