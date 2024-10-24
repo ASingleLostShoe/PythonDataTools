@@ -38,6 +38,15 @@ pandas_to_postgresql = {
     'Interval': 'INTERVAL',       # Time intervals
     'Period': 'TIMESTAMP',        # Period data (mapped to TIMESTAMP)
     'RASTER': 'RASTER',           # PostGIS Raster type
+    'Point': 'POINT',             # PostGIS Point Geometry
+    'MultiPoint': 'MULTIPOINT',   # PostGIS multioint Geometry
+    'LineString': 'LINESTRING',   # PostGIS Line Geometry
+    'MultiLineString': 'MULTILINESTRING', # PostGIS multiline Geometry
+    'Polygon': 'POLYGON',         # PostGIS Polygon Geometry
+    'MultiPolygon': 'MULTIPOLYGON', # PostGIS Multipolygon Geometry
+    'GeometryCollection': 'GEOMETRYCOLLECTION', # PostGIS multigeometry collection Geometry
+    'geometry': 'GEOMETRY', # PostGIS Generic Geometry
+    'GeoDataFrame': 'GEOMETRY', # PostGIS Generic Geometry
 }
 
 
