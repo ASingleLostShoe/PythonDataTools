@@ -4,6 +4,7 @@ Last updated: 11.21.23
 """
 import data_utils as du
 import pandas as pd
+import geopandas as gpd
 import os
 import sqlite3 as sql
 import psycopg as pg
@@ -59,8 +60,167 @@ def prepare_dict(list_of_dicts):
 """
 POSTGRESQL TOOLS
 """
+def insert_rows_gdf(filepath,schema,table_name):
+    """
+    inserts all rows from a geospatial filetype into a specified postgreSQL table.
+    The intention is that a user would run this after "create_table_columns_gdf()". 
+    Can handle many different types of geospatial files thanks to geopandas. Take a look at geopandas
+    documentation for more specifics.
 
-#Creates a a new table using column headers from a csv.
+    Parameters:
+    filepath (str): filepath to spatial data file to import. 
+    schema (str): name of schema in postgreSQL.
+    table_name (str): name of existing table in postgreSQL to import data to.
+
+    Returns:
+    Nothing. Self-contained function.
+    """
+    load_dotenv()
+    dbname = os.environ.get('DB_NAME')
+    user = os.environ.get("USER")
+    password = os.environ.get("PASSWORD")
+
+    try:
+        host = os.environ.get("HOST")
+        port = os.environ.get("PORT")
+
+    except:
+        print("no env variable set for host and/or port.") 
+        print("Attempting connection on pgadmin defaults.")
+        host = None
+        port = None
+
+
+    if host == None or port == None:
+        #establish db connection
+        cur,conn = initiate_pg_cursor(dbname,user,password)
+        print("connection established")
+
+    else:
+
+        cur,conn = initiate_pg_cursor(dbname,user,password,host,port)
+        print("connection established")
+
+
+    #prep data for insertion to db table
+    gdf = gpd.read_file(filepath)
+
+    gdf['geometry']=gdf['geometry'].apply(lambda geom: geom.wkt if geom else None)
+
+    column_names = gdf.columns.tolist()
+    corrected_column_names = du.replace_spaces_in_list(column_names)
+    gdf.columns = corrected_column_names
+    col = ', '.join(list(gdf.columns))
+    values = ', '.join(list('%s' for _ in gdf.columns))
+    insert_query = f"INSERT INTO {schema}.{table_name} ({col}) VALUES ({values})"
+
+    data_tuples = [tuple(x) for x in gdf.to_numpy()]
+
+  
+
+    print(f'inserting values across {len(corrected_column_names)} columns in {dbname}.{schema}.{table_name}')
+    print()
+    print('executing INSERT...')
+    cur.executemany(insert_query, data_tuples)
+    print('INSERT executed.')
+    conn.commit()
+    print('changes committed!')
+    conn.close()
+    print('connection closed.')
+    print()
+
+    print(f'{len(values)} values have been inserted into "{schema}.{table_name}" in the database {dbname}.')
+  
+# creates a table in pg from a spatial file type (geojson,shapefile, etc. See geopandas documentation for more.)
+def create_table_columns_gdf(filepath,schema,new_table_name):
+    """
+    Creates a new table in a postgreSQL database from an spatial file. uses geopandas
+    to get datatype, then converts to compatible PGSQL datatype with dtype_pd_to_pg().
+
+    Parameters:
+    filepath (str): filepath to spatial data file 
+    schema (str): name of schema in db to insert table into.
+    new_table_name (str): name of new table being created
+
+    Returns:
+    Self contained function, does not return any variables.
+    """
+    format_crs = True #if format_crs is set to True, set_crs will execute.
+
+    load_dotenv()
+    dbname = os.environ.get('DB_NAME')
+    user = os.environ.get("USER")
+    password = os.environ.get("PASSWORD")
+    host = os.environ.get("HOST")
+    port = os.environ.get("PORT")
+    
+
+    cur,conn = initiate_pg_cursor(dbname,user,password,host,port)
+    
+    gdf = gpd.read_file(filepath)
+    column_names = gdf.columns.tolist()
+    column_dtypes = gdf.dtypes.tolist()
+    crs = gdf.crs # crs = coordinate reference system
+
+    if crs == None:
+        print("unable to identify crs, remember to update crs after table creation.")
+    # convert crs to SRID so that geometry crs can be easily set in postgis table.
+    # Broken as of 10.24.24
+    else:
+        try:
+            srid = srid_lookup(cur,crs)
+
+        except Exception as e:
+            print("unable to identify crs, remember to update crs after table creation.")
+            print(f"error details: {e}")
+            format_crs = False
+
+
+    # convert pandas/gpandas data types to corresponding pg datatypes.
+    pg_dtypes = dtype_pd_to_pg(column_dtypes)
+
+    # remove spaces from names. avoids issues in pg later.
+    corrected_column_names = du.replace_spaces_in_list(column_names)
+
+    # print pandas dtypes and Pg datatypes for troubleshooting
+    for colname, coldtype in zip(corrected_column_names,pg_dtypes):
+        print(colname,coldtype)
+
+    print()
+    print(f'{len(corrected_column_names)} columns identified and formatted.')
+    print()
+
+    # PGSQL query to create table with corrected column names and dtypes
+    create_table = f"""CREATE TABLE {schema}.{new_table_name} ({','.join([f'{col} {dtype}' for col, dtype in zip(corrected_column_names, pg_dtypes)])})"""
+    
+    
+    # PGSQL query to set geometry column to crs using SRID code
+    set_crs = f"""
+    ALTER TABLE {schema}.{new_table_name}
+    ALTER COLUMN geometry TYPE geometry(geometry, {srid})
+    USING ST_setSRID(geometry, {srid});
+    """
+
+    # execute PGSQL queries
+    cur.execute(create_table)
+    print(f'Table "{schema}.{new_table_name}" has been created in the database {dbname}.')
+    print()
+
+    if format_crs == True:
+        cur.execute(set_crs)
+        print(f"Geometry Coordinate Reference System (CRS) set to SRID {srid}.")
+        print()
+
+    # commit and close db connections. 
+    print("committing changes to db...")
+    conn.commit()
+    print("done.")
+    print()
+    conn.close()
+    print("db connection closed.")
+
+    
+#Creates a new table using column headers from a csv.
 def create_table_columns_from_csv(csv_file_path,schema,new_table_name,delim=';'):
 
     """
@@ -81,9 +241,11 @@ def create_table_columns_from_csv(csv_file_path,schema,new_table_name,delim=';')
     dbname = os.environ.get('DB_NAME')
     user = os.environ.get("USER")
     password = os.environ.get("PASSWORD")
+    host = os.environ.get("HOST")
+    port = os.environ.get("PORT")
 
     # Create a connection + cursor to the PostgreSQL database
-    cur,conn = initiate_pg_cursor(dbname,user,password) #connects to db and creates cursor object
+    cur,conn = initiate_pg_cursor(dbname,user,password,host,port) #connects to db and creates cursor object
 
 
     df = pd.read_csv(csv_file_path, sep=delim, nrows=1)  # Read only the first row to get column names
@@ -103,7 +265,7 @@ def create_table_columns_from_csv(csv_file_path,schema,new_table_name,delim=';')
 
     print(f'Table "{schema}.{new_table_name}" has been created in the database.')
 
-
+# creates new pg table from excel worksheet
 def create_table_columns_from_excel(xlsx_filepath,ws_name,schema,new_table_name):
     """
     Creates a new table in a postgreSQL database from an excel worksheet. uses pandas
@@ -124,8 +286,10 @@ def create_table_columns_from_excel(xlsx_filepath,ws_name,schema,new_table_name)
     dbname = os.environ.get('DB_NAME')
     user = os.environ.get("USER")
     password = os.environ.get("PASSWORD")
+    host = os.environ.get("HOST")
+    port = os.environ.get("PORT")
 
-    cur,conn = initiate_pg_cursor(dbname,user,password)
+    cur,conn = initiate_pg_cursor(dbname,user,password,host,port)
     
     df = pd.read_excel(io=xlsx_filepath,sheet_name=ws_name)
     column_names = df.columns.tolist()
@@ -149,7 +313,7 @@ def create_table_columns_from_excel(xlsx_filepath,ws_name,schema,new_table_name)
 
     print(f'Table "{schema}.{new_table_name}" has been created in the database {dbname}.')
 
-
+# returns a list of datatypes compatible with pg from a list of pandas datatypes
 def dtype_pd_to_pg(pd_dtypes):
     """
     Creates a list of postgresql data types equivalent to data types as they currently exist in 
@@ -166,6 +330,7 @@ def dtype_pd_to_pg(pd_dtypes):
         pg_dtypes.append(du.pandas_to_postgresql.get(str(dtype),'TEXT'))
     return pg_dtypes
 
+# inserts rows from an excel ws into an already existing pg table.
 def insert_rows_from_excel(xlsx_filepath,ws_name,schema,table_name):
     """
     inserts all rows from an excel woeksheet into a specified postgreSQL table.
@@ -214,10 +379,9 @@ def insert_rows_from_excel(xlsx_filepath,ws_name,schema,table_name):
     print()
 
     print(f'{len(values)} values have been inserted into "{schema}.{table_name}" in the database {dbname}.')
-
-    
+  
 #Initiates a connection and cursor for local postgreSQL session
-def initiate_pg_cursor(dbname,user,password):
+def initiate_pg_cursor(dbname,user,password,host='localhost',port='5432'):
 
     """
     Initiates connection and cursor objects for a local postgresql session. most secure way to use
@@ -228,6 +392,8 @@ def initiate_pg_cursor(dbname,user,password):
     dbname (str): name of database
     user (str): username. Best if passed from envionmental variable.
     password (str): password. Best if passed from environmental variable.
+    host (str): hosting machine string. Best if passed from environmental variable. defaults to 'localhost'
+    port (str): port number endpoint. Best if passed from environmental variable. Defaults to '5432', the pg default port. 
     
     Returns:
     cursor (pg cursor object): pass SQL queries to db and retrieve data from db.
@@ -235,15 +401,53 @@ def initiate_pg_cursor(dbname,user,password):
     """
    
     try:
-        connection = pg.connect(f"dbname={dbname} user={user} password={password}")
+        print(f"attempting to connect to {dbname}...")
+        connection = pg.connect(f"dbname={dbname} user={user} password={password} host={host} port={port}")
 
-    except:
-        print("error: connection not valid. Try changing connection parameter.")
-    
+    except pg.OperationalError as e:
+        print("error: connection not valid. Try changing connection parameters.")
+        print(f"detailed error: {e}")
+        print("hint: check connection parameters in local .env file.")
+        os.sys.exit()
 
+    except Exception as e:
+        print("An unexpected error occurred.")
+        print(f"error details: {e}.")
+
+    print("connection established.")
     cursor = connection.cursor()
-
+    print("cursor initiated.")
+    print()
     return cursor,connection
+
+# BROKEN !! 10.24.24
+# looks up matching SRID for a given crs.
+def srid_lookup(cur,crs):
+    """
+    The easiest way to set a coordinate reference system (crs) in postGIS is to use 
+    the crs' SRID (Spatial Reference Identifier). Geopandas doesn't use SRID, it uses EPSG
+    (European Petroleum Survey Group) codes. So this function first converts crs data
+    stored in the gdf (geodataframe), orignally pulled form the spatial data file read 
+    into the gdf, then inserts it into a query that gets the mathing SRID from the 
+    postgis.spatial_ref_sys table.  NOTE: only works if postgis is installed as an extension 
+    in the postgreSQL db.
+
+    Parameters:
+    cur (str): pg cursor object
+    crs (crs object): crs object, looks and functions a bit like a dictionary. geopandas object.
+
+    returns:
+    srid (int): matching SRID code for input crs.
+    """
+
+    # convert crs object to EPSG code (int)
+    epsg_code = crs.to_epsg()
+    
+    # select srid integer from postgis.spatial_ref_sys table.
+    srid = cur.execute(f"SELECT srid FROM postgis.spatial_ref_sys WHERE auth_name='EPSG' AND auth_srid={epsg_code};")
+    
+    return int(srid)
+
 
 """
 MONGODB TOOLS
