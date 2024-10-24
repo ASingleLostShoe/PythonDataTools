@@ -61,6 +61,20 @@ def prepare_dict(list_of_dicts):
 POSTGRESQL TOOLS
 """
 def insert_rows_gdf(filepath,schema,table_name):
+    """
+    inserts all rows from a geospatial filetype into a specified postgreSQL table.
+    The intention is that a user would run this after "create_table_columns_gdf()". 
+    Can handle many different types of geospatial files thanks to geopandas. Take a look at geopandas
+    documentation for more specifics.
+
+    Parameters:
+    filepath (str): filepath to spatial data file to import. 
+    schema (str): name of schema in postgreSQL.
+    table_name (str): name of existing table in postgreSQL to import data to.
+
+    Returns:
+    Nothing. Self-contained function.
+    """
     load_dotenv()
     dbname = os.environ.get('DB_NAME')
     user = os.environ.get("USER")
@@ -119,7 +133,19 @@ def insert_rows_gdf(filepath,schema,table_name):
   
 # creates a table in pg from a spatial file type (geojson,shapefile, etc. See geopandas documentation for more.)
 def create_table_columns_gdf(filepath,schema,new_table_name):
-    
+    """
+    Creates a new table in a postgreSQL database from an spatial file. uses geopandas
+    to get datatype, then converts to compatible PGSQL datatype with dtype_pd_to_pg().
+
+    Parameters:
+    filepath (str): filepath to spatial data file 
+    schema (str): name of schema in db to insert table into.
+    new_table_name (str): name of new table being created
+
+    Returns:
+    Self contained function, does not return any variables.
+    """
+
     load_dotenv()
     dbname = os.environ.get('DB_NAME')
     user = os.environ.get("USER")
