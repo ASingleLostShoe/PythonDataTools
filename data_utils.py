@@ -49,7 +49,6 @@ pandas_to_postgresql = {
     'GeoDataFrame': 'GEOMETRY', # PostGIS Generic Geometry
 }
 
-
 def open_json(fileName):
     with open(fileName, 'r') as fhand:
         parsed_json = json.load(fhand)

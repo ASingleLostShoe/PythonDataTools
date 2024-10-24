@@ -145,6 +145,7 @@ def create_table_columns_gdf(filepath,schema,new_table_name):
     Returns:
     Self contained function, does not return any variables.
     """
+    format_crs = True #if format_crs is set to True, set_crs will execute.
 
     load_dotenv()
     dbname = os.environ.get('DB_NAME')
@@ -159,10 +160,29 @@ def create_table_columns_gdf(filepath,schema,new_table_name):
     gdf = gpd.read_file(filepath)
     column_names = gdf.columns.tolist()
     column_dtypes = gdf.dtypes.tolist()
+    crs = gdf.crs # crs = coordinate reference system
 
+    if crs == None:
+        print("unable to identify crs, remember to update crs after table creation.")
+    # convert crs to SRID so that geometry crs can be easily set in postgis table.
+    # Broken as of 10.24.24
+    else:
+        try:
+            srid = srid_lookup(cur,crs)
+
+        except Exception as e:
+            print("unable to identify crs, remember to update crs after table creation.")
+            print(f"error details: {e}")
+            format_crs = False
+
+
+    # convert pandas/gpandas data types to corresponding pg datatypes.
     pg_dtypes = dtype_pd_to_pg(column_dtypes)
+
+    # remove spaces from names. avoids issues in pg later.
     corrected_column_names = du.replace_spaces_in_list(column_names)
 
+    # print pandas dtypes and Pg datatypes for troubleshooting
     for colname, coldtype in zip(corrected_column_names,pg_dtypes):
         print(colname,coldtype)
 
@@ -170,14 +190,36 @@ def create_table_columns_gdf(filepath,schema,new_table_name):
     print(f'{len(corrected_column_names)} columns identified and formatted.')
     print()
 
-    create_table = f"CREATE TABLE {schema}.{new_table_name} ({','.join([f'{col} {dtype}' for col, dtype in zip(corrected_column_names, pg_dtypes)])})"
+    # PGSQL query to create table with corrected column names and dtypes
+    create_table = f"""CREATE TABLE {schema}.{new_table_name} ({','.join([f'{col} {dtype}' for col, dtype in zip(corrected_column_names, pg_dtypes)])})"""
+    
+    
+    # PGSQL query to set geometry column to crs using SRID code
+    set_crs = f"""
+    ALTER TABLE {schema}.{new_table_name}
+    ALTER COLUMN geometry TYPE geometry(geometry, {srid})
+    USING ST_setSRID(geometry, {srid});
+    """
 
+    # execute PGSQL queries
     cur.execute(create_table)
-    conn.commit()
-    conn.close()
-
     print(f'Table "{schema}.{new_table_name}" has been created in the database {dbname}.')
+    print()
 
+    if format_crs == True:
+        cur.execute(set_crs)
+        print(f"Geometry Coordinate Reference System (CRS) set to SRID {srid}.")
+        print()
+
+    # commit and close db connections. 
+    print("committing changes to db...")
+    conn.commit()
+    print("done.")
+    print()
+    conn.close()
+    print("db connection closed.")
+
+    
 #Creates a new table using column headers from a csv.
 def create_table_columns_from_csv(csv_file_path,schema,new_table_name,delim=';'):
 
@@ -359,15 +401,53 @@ def initiate_pg_cursor(dbname,user,password,host='localhost',port='5432'):
     """
    
     try:
+        print(f"attempting to connect to {dbname}...")
         connection = pg.connect(f"dbname={dbname} user={user} password={password} host={host} port={port}")
 
-    except:
-        print("error: connection not valid. Try changing connection parameter.")
-    
+    except pg.OperationalError as e:
+        print("error: connection not valid. Try changing connection parameters.")
+        print(f"detailed error: {e}")
+        print("hint: check connection parameters in local .env file.")
+        os.sys.exit()
 
+    except Exception as e:
+        print("An unexpected error occurred.")
+        print(f"error details: {e}.")
+
+    print("connection established.")
     cursor = connection.cursor()
-
+    print("cursor initiated.")
+    print()
     return cursor,connection
+
+# BROKEN !! 10.24.24
+# looks up matching SRID for a given crs.
+def srid_lookup(cur,crs):
+    """
+    The easiest way to set a coordinate reference system (crs) in postGIS is to use 
+    the crs' SRID (Spatial Reference Identifier). Geopandas doesn't use SRID, it uses EPSG
+    (European Petroleum Survey Group) codes. So this function first converts crs data
+    stored in the gdf (geodataframe), orignally pulled form the spatial data file read 
+    into the gdf, then inserts it into a query that gets the mathing SRID from the 
+    postgis.spatial_ref_sys table.  NOTE: only works if postgis is installed as an extension 
+    in the postgreSQL db.
+
+    Parameters:
+    cur (str): pg cursor object
+    crs (crs object): crs object, looks and functions a bit like a dictionary. geopandas object.
+
+    returns:
+    srid (int): matching SRID code for input crs.
+    """
+
+    # convert crs object to EPSG code (int)
+    epsg_code = crs.to_epsg()
+    
+    # select srid integer from postgis.spatial_ref_sys table.
+    srid = cur.execute(f"SELECT srid FROM postgis.spatial_ref_sys WHERE auth_name='EPSG' AND auth_srid={epsg_code};")
+    
+    return int(srid)
+
 
 """
 MONGODB TOOLS
